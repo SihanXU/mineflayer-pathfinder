@@ -23,6 +23,9 @@ function inject (bot) {
   let path = []
   let pathRevision = 0
   let pathUpdated = false
+  // The ticks in a row a due search has waited for the body to land, and the most it waits.
+  let airTicks = 0
+  const AIR_TICKS = 30
   let digging = false
   let placing = false
   let placingBlock = null
@@ -429,6 +432,13 @@ function inject (bot) {
     }
   })
 
+  function inTheAir () {
+    const e = bot.entity
+    if (e.onGround || e.isInWater || e.isInLava || e.elytraFlying) return false
+    const b = bot.blockAt(e.position)
+    return !(b && (b.type === ladderId || b.type === vineId))
+  }
+
   function monitorMovement () {
     // Test freemotion
     if (stateMovements && stateMovements.allowFreeMotion && stateGoal && stateGoal.entity) {
@@ -479,6 +489,13 @@ function inject (bot) {
             fullStop()
           }
         } else if (!pathUpdated) {
+          // A search starts from the block the body stands in. In the middle of a jump or a fall it
+          // stands in none yet (a path dropped at the top of a jump was planned from a block up in the
+          // air, and its first step could not be walked): the search waits for the landing, for at
+          // most AIR_TICKS ticks. A body that is still read as off the ground then is not in a
+          // jump or a short fall (it can be read so where it stands): the search starts anyway.
+          if (inTheAir() && airTicks < AIR_TICKS) { airTicks++; return }
+          airTicks = 0
           const results = bot.pathfinder.getPathTo(stateMovements, stateGoal)
           const revision = pathRevision
           bot.emit('path_update', results)
@@ -560,7 +577,10 @@ function inject (bot) {
       let canPlace = true
       if (placingBlock.jump) {
         bot.setControlState('jump', true)
-        canPlace = placingBlock.y + 1 < bot.entity.position.y
+        // The block goes under the body once the feet are above where its top will be
+        // (PrismarineJS/mineflayer-pathfinder#296): placed earlier, it is inside the body and
+        // the game refuses it.
+        canPlace = placingBlock.y + 2.1 < bot.entity.position.y
       }
       if (canPlace) {
         if (!lockEquipItem.tryAcquire()) return
@@ -572,7 +592,8 @@ function inject (bot) {
             if (interactableBlocks.includes(refBlock.name)) {
               bot.setControlState('sneak', true)
             }
-            bot.placeBlock(refBlock, new Vec3(placingBlock.dx, placingBlock.dy, placingBlock.dz))
+            // (the head turns at once: a turn over several ticks sends the block after the body has moved on)
+            bot._placeBlockWithOptions(refBlock, new Vec3(placingBlock.dx, placingBlock.dy, placingBlock.dz), { swingArm: 'right', forceLook: true })
               .then(function () {
                 // Dont release Sneak if the block placement was not successful
                 bot.setControlState('sneak', false)
@@ -587,7 +608,12 @@ function inject (bot) {
                 lastNodeTime = performance.now()
               })
           })
-          .catch(_ignoreError => {})
+          .catch(_ignoreError => {
+            // The item could not be taken in hand (the game refuses a click now and then): without
+            // this the lock stayed taken, and the body jumped in place for as long as the goal stood.
+            lockEquipItem.release()
+            resetPath('place_error')
+          })
       }
       return
     }
