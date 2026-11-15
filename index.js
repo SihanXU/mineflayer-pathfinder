@@ -26,6 +26,8 @@ function inject (bot) {
   // The ticks in a row a due search has waited for the body to land, and the most it waits.
   let airTicks = 0
   const AIR_TICKS = 30
+  // How long a block placed under a jump is waited for: a jump lasts 12 ticks (600 ms).
+  const JUMP_PLACE_MS = 700
   let digging = false
   let placing = false
   let placingBlock = null
@@ -614,7 +616,19 @@ function inject (bot) {
               bot.setControlState('sneak', true)
             }
             // (the head turns at once: a turn over several ticks sends the block after the body has moved on)
-            bot._placeBlockWithOptions(refBlock, new Vec3(placingBlock.dx, placingBlock.dy, placingBlock.dz), { swingArm: 'right', forceLook: true })
+            const placement = bot._placeBlockWithOptions(refBlock, new Vec3(placingBlock.dx, placingBlock.dy, placingBlock.dz), { swingArm: 'right', forceLook: true })
+            // A block placed under a jump is there within that jump or not at all. The bot waits
+            // 5 seconds for the server's answer to a placement; with jump held and the placing lock
+            // taken, one placement the server did not answer kept the body jumping in place for all
+            // of them. A jump placement is given up after JUMP_PLACE_MS and tried again.
+            let waited = null
+            const settled = !placingBlock.jump
+              ? placement
+              : Promise.race([placement, new Promise((resolve, reject) => {
+                waited = setTimeout(() => reject(new Error('no answer to the placement within one jump')), JUMP_PLACE_MS)
+              })])
+            placement.catch(() => {})
+            settled
               .then(function () {
                 // Dont release Sneak if the block placement was not successful
                 bot.setControlState('sneak', false)
@@ -624,6 +638,7 @@ function inject (bot) {
                 resetPath('place_error')
               })
               .then(() => {
+                if (waited) clearTimeout(waited)
                 lockPlaceBlock.release()
                 placing = false
                 lastNodeTime = performance.now()

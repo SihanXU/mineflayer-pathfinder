@@ -22,6 +22,10 @@ Own changes, all in `index.js`:
   air (not on the ground, not in a liquid, not on a ladder or vine, not gliding); it starts
   at the landing, or 30 ticks later when the body is still read as off the ground then. A
   path dropped at the top of a jump was planned from the block the body was passing through.
+- A placement under a jump that gets no answer: it is given up after 700 ms and tried again
+  with the next jump. The bot waits 5 seconds for the server's answer to a placement; with
+  jump held and the placing lock taken, one unanswered placement kept the body jumping in
+  place for all of them.
 - Swimming through water at one height: a step counts as reached once the body is past its
   point on the way to the step after it. Before, a body that bobbed under the point on the
   tick it crossed the cell turned round and swam back to it.
