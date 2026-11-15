@@ -439,6 +439,27 @@ function inject (bot) {
     return !(b && (b.type === ladderId || b.type === vineId))
   }
 
+  // In water the body bobs: with jump held it rises and sinks around the surface, and on the
+  // tick it crosses the middle of a cell it can be more than 0.25 under the step's point, so
+  // the step was not counted and the body turned round to swim back to it. A step through
+  // water at one height counts as reached once the body is past its point on the way to the
+  // step after it, beside the line between the two by no more than half a block.
+  function passedInWater (p) {
+    if (!bot.entity.isInWater || path.length < 2) return false
+    const here = path[0]
+    const next = path[1]
+    if (here.y !== next.y) return false
+    const ux = next.x - here.x
+    const uz = next.z - here.z
+    const length = Math.hypot(ux, uz)
+    if (length === 0) return false
+    const rx = p.x - here.x
+    const rz = p.z - here.z
+    const along = (rx * ux + rz * uz) / length
+    const beside = Math.abs(rx * uz - rz * ux) / length
+    return along > 0 && beside <= 0.5 && Math.abs(here.y - p.y) < 1
+  }
+
   function monitorMovement () {
     // Test freemotion
     if (stateMovements && stateMovements.allowFreeMotion && stateGoal && stateGoal.entity) {
@@ -621,7 +642,8 @@ function inject (bot) {
     let dx = nextPoint.x - p.x
     const dy = nextPoint.y - p.y
     let dz = nextPoint.z - p.z
-    if (Math.abs(dx) <= 0.35 && Math.abs(dz) <= 0.35 && Math.abs(dy) < (bot.entity.isInWater && dy > 0 ? 0.25 : 1)) {
+    if ((Math.abs(dx) <= 0.35 && Math.abs(dz) <= 0.35 && Math.abs(dy) < (bot.entity.isInWater && dy > 0 ? 0.25 : 1)) ||
+        passedInWater(p)) {
       // arrived at next point
       lastNodeTime = performance.now()
       if (stopPathing) {
