@@ -21,7 +21,11 @@ function inject (bot) {
   let astartTimedout = false
   let dynamicGoal = false
   let path = []
+  let pathRevision = 0
   let pathUpdated = false
+  // The ticks in a row a due search has waited for the body to land, and the most it waits.
+  let airTicks = 0
+  const AIR_TICKS = 30
   let digging = false
   let placing = false
   let placingBlock = null
@@ -120,6 +124,7 @@ function inject (bot) {
   }
 
   function resetPath (reason, clearStates = true) {
+    pathRevision++
     if (!stopPathing && path.length > 0) bot.emit('path_reset', reason)
     path = []
     if (digging) {
@@ -398,6 +403,7 @@ function inject (bot) {
   }
 
   function stop () {
+    pathRevision++
     stopPathing = false
     stateGoal = null
     path = []
@@ -426,6 +432,34 @@ function inject (bot) {
     }
   })
 
+  function inTheAir () {
+    const e = bot.entity
+    if (e.onGround || e.isInWater || e.isInLava || e.elytraFlying) return false
+    const b = bot.blockAt(e.position)
+    return !(b && (b.type === ladderId || b.type === vineId))
+  }
+
+  // In water the body bobs: with jump held it rises and sinks around the surface, and on the
+  // tick it crosses the middle of a cell it can be more than 0.25 under the step's point, so
+  // the step was not counted and the body turned round to swim back to it. A step through
+  // water at one height counts as reached once the body is past its point on the way to the
+  // step after it, beside the line between the two by no more than half a block.
+  function passedInWater (p) {
+    if (!bot.entity.isInWater || path.length < 2) return false
+    const here = path[0]
+    const next = path[1]
+    if (here.y !== next.y) return false
+    const ux = next.x - here.x
+    const uz = next.z - here.z
+    const length = Math.hypot(ux, uz)
+    if (length === 0) return false
+    const rx = p.x - here.x
+    const rz = p.z - here.z
+    const along = (rx * ux + rz * uz) / length
+    const beside = Math.abs(rx * uz - rz * ux) / length
+    return along > 0 && beside <= 0.5 && Math.abs(here.y - p.y) < 1
+  }
+
   function monitorMovement () {
     // Test freemotion
     if (stateMovements && stateMovements.allowFreeMotion && stateGoal && stateGoal.entity) {
@@ -453,9 +487,12 @@ function inject (bot) {
       const results = astarContext.compute()
       results.path = postProcessPath(results.path)
       pathFromPlayer(results.path)
+      const revision = pathRevision
       bot.emit('path_update', results)
+      if (revision !== pathRevision) return
       path = results.path
       astartTimedout = results.status === 'partial'
+      if (results.status === 'timeout') pathUpdated = false
     }
 
     if (bot.pathfinder.LOSWhenPlacingBlocks && returningPos) {
@@ -473,11 +510,21 @@ function inject (bot) {
             fullStop()
           }
         } else if (!pathUpdated) {
+          // A search starts from the block the body stands in. In the middle of a jump or a fall it
+          // stands in none yet (a path dropped at the top of a jump was planned from a block up in the
+          // air, and its first step could not be walked): the search waits for the landing, for at
+          // most AIR_TICKS ticks. A body that is still read as off the ground then is not in a
+          // jump or a short fall (it can be read so where it stands): the search starts anyway.
+          if (inTheAir() && airTicks < AIR_TICKS) { airTicks++; return }
+          airTicks = 0
           const results = bot.pathfinder.getPathTo(stateMovements, stateGoal)
+          const revision = pathRevision
           bot.emit('path_update', results)
+          if (revision !== pathRevision) return
           path = results.path
           astartTimedout = results.status === 'partial'
-          pathUpdated = true
+          // out of time: search again once its partial path is walked
+          pathUpdated = results.status !== 'timeout'
         }
       }
     }
@@ -551,7 +598,10 @@ function inject (bot) {
       let canPlace = true
       if (placingBlock.jump) {
         bot.setControlState('jump', true)
-        canPlace = placingBlock.y + 1 < bot.entity.position.y
+        // The block goes under the body once the feet are above where its top will be
+        // (PrismarineJS/mineflayer-pathfinder#296): placed earlier, it is inside the body and
+        // the game refuses it.
+        canPlace = placingBlock.y + 2.1 < bot.entity.position.y
       }
       if (canPlace) {
         if (!lockEquipItem.tryAcquire()) return
@@ -563,7 +613,8 @@ function inject (bot) {
             if (interactableBlocks.includes(refBlock.name)) {
               bot.setControlState('sneak', true)
             }
-            bot.placeBlock(refBlock, new Vec3(placingBlock.dx, placingBlock.dy, placingBlock.dz))
+            // (the head turns at once: a turn over several ticks sends the block after the body has moved on)
+            bot._placeBlockWithOptions(refBlock, new Vec3(placingBlock.dx, placingBlock.dy, placingBlock.dz), { swingArm: 'right', forceLook: true })
               .then(function () {
                 // Dont release Sneak if the block placement was not successful
                 bot.setControlState('sneak', false)
@@ -578,7 +629,12 @@ function inject (bot) {
                 lastNodeTime = performance.now()
               })
           })
-          .catch(_ignoreError => {})
+          .catch(_ignoreError => {
+            // The item could not be taken in hand (the game refuses a click now and then): without
+            // this the lock stayed taken, and the body jumped in place for as long as the goal stood.
+            lockEquipItem.release()
+            resetPath('place_error')
+          })
       }
       return
     }
@@ -586,7 +642,8 @@ function inject (bot) {
     let dx = nextPoint.x - p.x
     const dy = nextPoint.y - p.y
     let dz = nextPoint.z - p.z
-    if (Math.abs(dx) <= 0.35 && Math.abs(dz) <= 0.35 && Math.abs(dy) < (bot.entity.isInWater && dy > 0 ? 0.25 : 1)) {
+    if ((Math.abs(dx) <= 0.35 && Math.abs(dz) <= 0.35 && Math.abs(dy) < (bot.entity.isInWater && dy > 0 ? 0.25 : 1)) ||
+        passedInWater(p)) {
       // arrived at next point
       lastNodeTime = performance.now()
       if (stopPathing) {
