@@ -28,9 +28,12 @@ function inject (bot) {
   const AIR_TICKS = 30
   // How long a block placed under a jump is waited for: a jump lasts 12 ticks (600 ms).
   const JUMP_PLACE_MS = 700
-  // A new search's results are not used for its first SEARCH_HEAD_MS. Until then the body goes on
-  // by the path it had, where the world changed (a block near the path, a chunk loaded): most of
-  // those changes are the path's own digs and placements, which it was planned with. The first
+  // While the body has a path to go on by, a search's result that is not its last (the search
+  // goes on) is not used for the search's first SEARCH_HEAD_MS; its last result is used at once,
+  // and so is any result when there is no path to go on by. Until then the body goes on by the
+  // path it had, where the world changed (a block near the path, a chunk loaded) or the goal
+  // moved: most changes of blocks are the path's own digs and placements, which it was planned
+  // with, and a goal that moved is still where the old path leads, nearly. The first
   // slices of a search give the way to the point nearest the goal in a straight line, which is
   // often the opposite of the way that is found in the end (a block placed under a jump was dug
   // out again by the first slice of the next search, then placed again, without end).
@@ -141,8 +144,8 @@ function inject (bot) {
     pathRevision++
     if (!stopPathing && path.length > 0) bot.emit('path_reset', reason)
     found = null
-    if ((reason === 'block_updated' || reason === 'chunk_loaded') && path.length > 0 && !stopPathing) {
-      // the world changed: the path stays in use until the new search is SEARCH_HEAD_MS old
+    if ((reason === 'block_updated' || reason === 'chunk_loaded' || reason === 'goal_moved') && path.length > 0 && !stopPathing) {
+      // the world changed or the goal moved: the path stays in use until the new search's result is
       searchDue = true
       pathUpdated = false
       astarContext = null
@@ -545,8 +548,6 @@ function inject (bot) {
       astartTimedout = results.status === 'partial'
       if (results.status === 'timeout') pathUpdated = false
     }
-    // (A placement under way is let end first: it lasts a jump at most.)
-    if (found && !placing && performance.now() >= useAt) useFound()
 
     if (bot.pathfinder.LOSWhenPlacingBlocks && returningPos) {
       if (!moveToBlock(returningPos)) return
@@ -587,6 +588,10 @@ function inject (bot) {
         }
       }
     }
+
+    // With no path to go on by, the result is used at once: the body does not stand and wait.
+    // (A placement under way is let end first: it lasts a jump at most.)
+    if (found && !placing && (found.status !== 'partial' || path.length === 0 || performance.now() >= useAt)) useFound()
 
     if (path.length === 0) {
       return
