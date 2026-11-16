@@ -538,18 +538,6 @@ function inject (bot) {
     let nextPoint = path[0]
     const p = bot.entity.position
 
-    // A search that is still running hands over the best path it has so far, and that path
-    // changes from tick to tick as the search goes on. Walking along it costs nothing; digging
-    // or placing by it changes the world for a path the finished search may not take. (Seen: a
-    // block placed under a jump by a finished path was dug out again by the first partial path
-    // of the next search, then placed again, without end.) A step that breaks or places waits
-    // for the search to end; a search ends within its thinkTimeout.
-    if (astartTimedout && !digging && !placing && (nextPoint.toBreak.length > 0 || nextPoint.toPlace.length > 0)) {
-      fullStop()
-      lastNodeTime = performance.now()
-      return
-    }
-
     // Handle digging
     if (digging || nextPoint.toBreak.length > 0) {
       if (!digging && bot.entity.onGround) {
