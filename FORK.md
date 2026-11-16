@@ -30,9 +30,6 @@ Own changes, all in `index.js`:
   the best path it has so far, which changes from tick to tick. A block placed under a jump
   by a finished path was dug out again by the first partial path of the next search, then
   placed again, without end. Walking along a partial path goes on as before.
-- The path's own changes do not end it: a block the path dug or placed, changed the way the
-  path meant it to, is no reason to search again. Before, every block the body dug or placed
-  threw the path away and started a new search, one search for each block.
 - Swimming through water at one height: a step counts as reached once the body is past its
   point on the way to the step after it. Before, a body that bobbed under the point on the
   tick it crossed the cell turned round and swam back to it.

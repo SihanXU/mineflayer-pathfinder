@@ -24,8 +24,6 @@ function inject (bot) {
   let pathRevision = 0
   let pathUpdated = false
   // The ticks in a row a due search has waited for the body to land, and the most it waits.
-  // The changes of blocks the path is making itself: position -> 'dug' or 'placed'.
-  const ownChanges = new Map()
   let airTicks = 0
   const AIR_TICKS = 30
   // How long a block placed under a jump is waited for: a jump lasts 12 ticks (600 ms).
@@ -129,7 +127,6 @@ function inject (bot) {
 
   function resetPath (reason, clearStates = true) {
     pathRevision++
-    ownChanges.clear()
     if (!stopPathing && path.length > 0) bot.emit('path_reset', reason)
     path = []
     if (digging) {
@@ -418,14 +415,6 @@ function inject (bot) {
 
   bot.on('blockUpdate', (oldBlock, newBlock) => {
     if (!oldBlock || !newBlock) return
-    // A block the path itself dug or placed, changed the way the path meant it to: the path
-    // was planned with that change, and goes on. Before, every block the body dug or placed
-    // threw the path away and started a new search, one search for each block.
-    const own = ownChanges.get(oldBlock.position.toString())
-    if (own && oldBlock.type !== newBlock.type) {
-      ownChanges.delete(oldBlock.position.toString())
-      if ((own === 'dug') === (newBlock.boundingBox !== 'block')) return
-    }
     if (isPositionNearPath(oldBlock.position, path) && oldBlock.type !== newBlock.type) {
       resetPath('block_updated', false)
     }
@@ -567,7 +556,6 @@ function inject (bot) {
         digging = true
         const b = nextPoint.toBreak.shift()
         const block = bot.blockAt(new Vec3(b.x, b.y, b.z), false)
-        ownChanges.set(block.position.toString(), 'dug')
         const tool = bot.pathfinder.bestHarvestTool(block)
         fullStop()
 
@@ -640,7 +628,6 @@ function inject (bot) {
               bot.setControlState('sneak', true)
             }
             // (the head turns at once: a turn over several ticks sends the block after the body has moved on)
-            ownChanges.set(refBlock.position.offset(placingBlock.dx, placingBlock.dy, placingBlock.dz).toString(), 'placed')
             const placement = bot._placeBlockWithOptions(refBlock, new Vec3(placingBlock.dx, placingBlock.dy, placingBlock.dz), { swingArm: 'right', forceLook: true })
             // A block placed under a jump is there within that jump or not at all. The bot waits
             // 5 seconds for the server's answer to a placement; with jump held and the placing lock
