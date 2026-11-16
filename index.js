@@ -41,6 +41,7 @@ function inject (bot) {
   let found = null // the newest result of a search that is not in use yet
   let useAt = 0 // when it is put to use
   let searchDue = false // the path is kept and a new search has to start
+  let walkedOn = false // the body went on by a path while the search of `found` ran
   let diggingAt = null // the block being dug
   let digDropped = false // that dig was ended for a new path: its failure drops no path
   let digging = false
@@ -494,7 +495,12 @@ function inject (bot) {
     const results = found
     found = null
     searchDue = false
-    pathFromPlayer(results.path)
+    // The points the body has passed meanwhile are cut off, where it went on by a path while
+    // the search ran. A path the body has not moved since is used whole: cut to the body's
+    // place, it lost its first point when that point was a step up beside the body, and the
+    // body walked at the second point, into the wall.
+    if (walkedOn) pathFromPlayer(results.path)
+    walkedOn = false
     const first = results.path[0]
     if (digging) {
       const next = first && first.toBreak[0]
@@ -579,6 +585,7 @@ function inject (bot) {
             bot.emit('path_update', results)
             if (revision !== pathRevision) return
             found = results
+            walkedOn = path.length > 0
             useAt = performance.now() + SEARCH_HEAD_MS
             searchDue = false
             astartTimedout = results.status === 'partial'
