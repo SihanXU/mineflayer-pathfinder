@@ -33,6 +33,15 @@ Own changes, all in `index.js`:
   The first slices of a search give the way to the point nearest the goal in a straight line;
   acted on at once, they undid what the finished path had just done (a block placed under a
   jump was dug out again, then placed again, without end).
+- A search's result is used only when its path begins where the body is. A search goes on for
+  many ticks from the block the body stood in when it began, and the body goes on meanwhile by
+  the results it gave first; a later result that leads another way begins at a block the body
+  has left. Such a result is not used and its search ends: the body goes on by the path it has,
+  and the next search starts from where it stands then. Before, the path was replaced, and its
+  first step, a block to place under a jump, could not be done from where the body was: it
+  jumped in place for as long as the goal stood.
+- A placement that is not done within 3.5 seconds drops the path as `stuck`, as a walk to a
+  point does. The check stood at the end of the function, which a placement returns before.
 - GoalLookAtBlock.isEnd compares the middle of the feet cell with the middle of the block: from
   the cell next to the block on the +x or +z side the face turned to the body did not count.
 - Swimming through water at one height: a step counts as reached once the body is past its

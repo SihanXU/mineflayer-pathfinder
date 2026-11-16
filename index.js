@@ -41,7 +41,7 @@ function inject (bot) {
   let found = null // the newest result of a search that is not in use yet
   let useAt = 0 // when it is put to use
   let searchDue = false // the path is kept and a new search has to start
-  let walkedOn = false // the body went on by a path while the search of `found` ran
+  let searchFrom = null // where the body stood when the search of the newest result began
   let diggingAt = null // the block being dug
   let digDropped = false // that dig was ended for a new path: its failure drops no path
   let digging = false
@@ -273,7 +273,39 @@ function inject (bot) {
       minI += d12 > d2 || reached ? 1 : 0
     }
 
+    const before = minI > 0 ? path[minI - 1] : null
     path.splice(0, minI)
+    return before
+  }
+
+  // Cuts a search's path to the body's place and says whether it begins there: only then can
+  // its first step be done. A search goes on for many ticks from the block the body stood in
+  // when it began, and the body goes on meanwhile by the results it gave first. A later result
+  // that leads another way begins at a block the body has left: its first step was done from
+  // where the body is not (a block to place under a jump the body could not make there: it
+  // jumped in place for as long as the goal stood).
+  function fitToBody (path) {
+    if (path.length === 0) return true
+    const at = bot.entity.position
+    // (not moved since the search began: the path is used whole. Cut to the body's place it
+    // lost its first point when that point was a step up beside the body.)
+    if (searchFrom && Math.floor(at.x) === Math.floor(searchFrom.x) && Math.floor(at.z) === Math.floor(searchFrom.z) &&
+        Math.abs(at.y - searchFrom.y) < 1.5) return true
+    const before = pathFromPlayer(path)
+    const from = before || (searchFrom ? { x: Math.floor(searchFrom.x) + 0.5, y: searchFrom.y, z: Math.floor(searchFrom.z) + 0.5 } : null)
+    if (!from || path.length === 0) return path.length === 0
+    const first = path[0]
+    if (first.toBreak.length !== 0 || first.toPlace.length !== 0) {
+      // a dig or a placement is done from the point before it
+      return Math.abs(from.x - at.x) <= 0.8 && Math.abs(from.z - at.z) <= 0.8 && Math.abs(from.y - at.y) <= 1.5
+    }
+    // a walk, a jump or a drop: the body is on the way from the point before it to the first point
+    const wx = first.x - from.x
+    const wz = first.z - from.z
+    const length = wx * wx + wz * wz
+    const along = length === 0 ? 0 : Math.max(0, Math.min(1, ((at.x - from.x) * wx + (at.z - from.z) * wz) / length))
+    const off = Math.hypot(at.x - (from.x + along * wx), at.z - (from.z + along * wz))
+    return off <= 1 && at.y >= Math.min(from.y, first.y) - 1.5 && at.y <= Math.max(from.y, first.y) + 1.5
   }
 
   function isPositionNearPath (pos, path) {
@@ -494,13 +526,16 @@ function inject (bot) {
   function useFound () {
     const results = found
     found = null
+    if (!fitToBody(results.path)) {
+      // The path does not begin where the body is. Its search began at a block the body has
+      // left, and so will what that search gives next: the search ends here. The body goes on
+      // by the path it has, and the next search starts from where it stands then.
+      astarContext = null
+      astartTimedout = false
+      pathUpdated = false
+      return
+    }
     searchDue = false
-    // The points the body has passed meanwhile are cut off, where it went on by a path while
-    // the search ran. A path the body has not moved since is used whole: cut to the body's
-    // place, it lost its first point when that point was a step up beside the body, and the
-    // body walked at the second point, into the wall.
-    if (walkedOn) pathFromPlayer(results.path)
-    walkedOn = false
     const first = results.path[0]
     if (digging) {
       const next = first && first.toBreak[0]
@@ -545,12 +580,11 @@ function inject (bot) {
     if (astarContext && astartTimedout) {
       const results = astarContext.compute()
       results.path = postProcessPath(results.path)
-      pathFromPlayer(results.path)
       const revision = pathRevision
       bot.emit('path_update', results)
       if (revision !== pathRevision) return
-      if (found) found = results
-      else path = results.path
+      // (with no result waiting, this one is used in this tick: `useAt` is in the past)
+      found = results
       astartTimedout = results.status === 'partial'
       if (results.status === 'timeout') pathUpdated = false
     }
@@ -585,7 +619,7 @@ function inject (bot) {
             bot.emit('path_update', results)
             if (revision !== pathRevision) return
             found = results
-            walkedOn = path.length > 0
+            searchFrom = bot.entity.position.clone()
             useAt = performance.now() + SEARCH_HEAD_MS
             searchDue = false
             astartTimedout = results.status === 'partial'
@@ -646,6 +680,13 @@ function inject (bot) {
         placing = true
         placingBlock = nextPoint.toPlace.shift()
         fullStop()
+      }
+      // A placement that is not done in the time any step may take is given up, as a walk to a
+      // point is: the path is dropped and searched again from where the body stands. (This
+      // branch returns before the check at the end of the function.)
+      if (performance.now() - lastNodeTime > 3500) {
+        resetPath('stuck')
+        return
       }
 
       // Open gates or doors
