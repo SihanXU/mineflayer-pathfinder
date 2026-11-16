@@ -28,6 +28,18 @@ function inject (bot) {
   const AIR_TICKS = 30
   // How long a block placed under a jump is waited for: a jump lasts 12 ticks (600 ms).
   const JUMP_PLACE_MS = 700
+  // A new search's results are not used for its first SEARCH_HEAD_MS. Until then the body goes on
+  // by the path it had, where the world changed (a block near the path, a chunk loaded): most of
+  // those changes are the path's own digs and placements, which it was planned with. The first
+  // slices of a search give the way to the point nearest the goal in a straight line, which is
+  // often the opposite of the way that is found in the end (a block placed under a jump was dug
+  // out again by the first slice of the next search, then placed again, without end).
+  const SEARCH_HEAD_MS = 500
+  let found = null // the newest result of a search that is not in use yet
+  let useAt = 0 // when it is put to use
+  let searchDue = false // the path is kept and a new search has to start
+  let diggingAt = null // the block being dug
+  let digDropped = false // that dig was ended for a new path: its failure drops no path
   let digging = false
   let placing = false
   let placingBlock = null
@@ -128,6 +140,15 @@ function inject (bot) {
   function resetPath (reason, clearStates = true) {
     pathRevision++
     if (!stopPathing && path.length > 0) bot.emit('path_reset', reason)
+    found = null
+    if ((reason === 'block_updated' || reason === 'chunk_loaded') && path.length > 0 && !stopPathing) {
+      // the world changed: the path stays in use until the new search is SEARCH_HEAD_MS old
+      searchDue = true
+      pathUpdated = false
+      astarContext = null
+      return
+    }
+    searchDue = false
     path = []
     if (digging) {
       bot.on('diggingAborted', detectDiggingStopped)
@@ -408,6 +429,8 @@ function inject (bot) {
     pathRevision++
     stopPathing = false
     stateGoal = null
+    found = null
+    searchDue = false
     path = []
     bot.emit('path_stop')
     fullStop()
@@ -462,6 +485,31 @@ function inject (bot) {
     return along > 0 && beside <= 0.5 && Math.abs(here.y - p.y) < 1
   }
 
+  // The result of the new search replaces the path. What the old path was doing ends, as in a
+  // drop of the path, except a dig of the block the new path digs first: that dig goes on.
+  function useFound () {
+    const results = found
+    found = null
+    searchDue = false
+    pathFromPlayer(results.path)
+    const first = results.path[0]
+    if (digging) {
+      const next = first && first.toBreak[0]
+      if (next && diggingAt && next.x === diggingAt.x && next.y === diggingAt.y && next.z === diggingAt.z) {
+        first.toBreak.shift()
+      } else {
+        digDropped = true
+        bot.on('diggingAborted', detectDiggingStopped)
+        bot.on('diggingCompleted', detectDiggingStopped)
+        bot.stopDigging()
+      }
+    }
+    lockEquipItem.release()
+    lockPlaceBlock.release()
+    lockUseBlock.release()
+    path = results.path
+  }
+
   function monitorMovement () {
     // Test freemotion
     if (stateMovements && stateMovements.allowFreeMotion && stateGoal && stateGoal.entity) {
@@ -492,41 +540,50 @@ function inject (bot) {
       const revision = pathRevision
       bot.emit('path_update', results)
       if (revision !== pathRevision) return
-      path = results.path
+      if (found) found = results
+      else path = results.path
       astartTimedout = results.status === 'partial'
       if (results.status === 'timeout') pathUpdated = false
     }
+    // (A placement under way is let end first: it lasts a jump at most.)
+    if (found && !placing && performance.now() >= useAt) useFound()
 
     if (bot.pathfinder.LOSWhenPlacingBlocks && returningPos) {
       if (!moveToBlock(returningPos)) return
       returningPos = null
     }
 
-    if (path.length === 0) {
-      lastNodeTime = performance.now()
+    if (path.length === 0 || searchDue) {
+      if (path.length === 0) lastNodeTime = performance.now()
       if (stateGoal && stateMovements) {
-        if (stateGoal.isEnd(bot.entity.position.floored())) {
+        if (path.length === 0 && !found && stateGoal.isEnd(bot.entity.position.floored())) {
           if (!dynamicGoal) {
             bot.emit('goal_reached', stateGoal)
             stateGoal = null
             fullStop()
           }
-        } else if (!pathUpdated) {
+        } else if (!pathUpdated && !found) {
           // A search starts from the block the body stands in. In the middle of a jump or a fall it
           // stands in none yet (a path dropped at the top of a jump was planned from a block up in the
           // air, and its first step could not be walked): the search waits for the landing, for at
           // most AIR_TICKS ticks. A body that is still read as off the ground then is not in a
           // jump or a short fall (it can be read so where it stands): the search starts anyway.
-          if (inTheAir() && airTicks < AIR_TICKS) { airTicks++; return }
-          airTicks = 0
-          const results = bot.pathfinder.getPathTo(stateMovements, stateGoal)
-          const revision = pathRevision
-          bot.emit('path_update', results)
-          if (revision !== pathRevision) return
-          path = results.path
-          astartTimedout = results.status === 'partial'
-          // out of time: search again once its partial path is walked
-          pathUpdated = results.status !== 'timeout'
+          if (inTheAir() && airTicks < AIR_TICKS) {
+            airTicks++
+            if (path.length === 0) return
+          } else {
+            airTicks = 0
+            const results = bot.pathfinder.getPathTo(stateMovements, stateGoal)
+            const revision = pathRevision
+            bot.emit('path_update', results)
+            if (revision !== pathRevision) return
+            found = results
+            useAt = performance.now() + SEARCH_HEAD_MS
+            searchDue = false
+            astartTimedout = results.status === 'partial'
+            // out of time: search again once its partial path is walked
+            pathUpdated = results.status !== 'timeout'
+          }
         }
       }
     }
@@ -544,13 +601,15 @@ function inject (bot) {
         digging = true
         const b = nextPoint.toBreak.shift()
         const block = bot.blockAt(new Vec3(b.x, b.y, b.z), false)
+        diggingAt = b
         const tool = bot.pathfinder.bestHarvestTool(block)
         fullStop()
 
         const digBlock = () => {
           bot.dig(block, true)
             .catch(_ignoreError => {
-              resetPath('dig_error')
+              if (digDropped) digDropped = false
+              else resetPath('dig_error')
             })
             .then(function () {
               lastNodeTime = performance.now()

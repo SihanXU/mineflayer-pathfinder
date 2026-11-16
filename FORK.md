@@ -26,6 +26,13 @@ Own changes, all in `index.js`:
   with the next jump. The bot waits 5 seconds for the server's answer to a placement; with
   jump held and the placing lock taken, one unanswered placement kept the body jumping in
   place for all of them.
+- A new search's results are not used for its first 500 ms. Until then the body goes on by the
+  path it had, where the path was dropped for a change of the world (a block near it, a chunk).
+  The first slices of a search give the way to the point nearest the goal in a straight line;
+  acted on at once, they undid what the finished path had just done (a block placed under a
+  jump was dug out again, then placed again, without end).
+- GoalLookAtBlock.isEnd compares the middle of the feet cell with the middle of the block: from
+  the cell next to the block on the +x or +z side the face turned to the body did not count.
 - Swimming through water at one height: a step counts as reached once the body is past its
   point on the way to the step after it. Before, a body that bobbed under the point on the
   tick it crossed the cell turned round and swam back to it.
