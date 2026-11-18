@@ -48,5 +48,13 @@ Own changes, all in `index.js`:
   point on the way to the step after it. Before, a body that bobbed under the point on the
   tick it crossed the cell turned round and swam back to it.
 
+In `lib/movements.js`:
+
+- A single snow layer (no collision shape, though marked solid) is walked through, is never a
+  block to place against, and a block may be placed into its cell, as the server does. Before,
+  a scaffold block was placed against its side from a body standing in it: the server put the
+  block into the snow's cell (where the body was) and refused, every time, and the path came
+  back to that step again and again.
+
 `package.json`: vec3 `>=0.1.10 <0.3.0`, so the pathfinder uses the Vec3 class of the bot it
 is loaded into.
