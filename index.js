@@ -38,6 +38,33 @@ function inject (bot) {
   // often the opposite of the way that is found in the end (a block placed under a jump was dug
   // out again by the first slice of the next search, then placed again, without end).
   const SEARCH_HEAD_MS = 500
+  // A step that failed (a walk that made no progress, a placement that could not be made) is
+  // dearer for the searches of the next FAILED_MS: searched again from the same place with the
+  // same inputs, the same path came out each time and the body repeated the failed step.
+  const FAILED_MS = 60000
+  const FAILED_COST = 20
+  const failed = new Map()
+  function noteFailed (x, y, z) {
+    const key = `${Math.floor(x)},${Math.floor(y)},${Math.floor(z)}`
+    const f = failed.get(key) || { n: 0 }
+    f.n++
+    f.until = performance.now() + FAILED_MS
+    failed.set(key, f)
+  }
+  function failedCost (block) {
+    if (!block || !block.position || failed.size === 0) return 0
+    const key = `${block.position.x},${block.position.y},${block.position.z}`
+    const f = failed.get(key)
+    if (!f) return 0
+    if (performance.now() > f.until) { failed.delete(key); return 0 }
+    return FAILED_COST * f.n
+  }
+  function withFailedCosts (movements) {
+    if (!movements || failed.size === 0 || movements.__failedCosts) return
+    movements.__failedCosts = true
+    movements.exclusionAreasStep.push(failedCost)
+    movements.exclusionAreasPlace.push(failedCost)
+  }
   let found = null // the newest result of a search that is not in use yet
   let useAt = 0 // when it is put to use
   let searchDue = false // the path is kept and a new search has to start
@@ -90,6 +117,7 @@ function inject (bot) {
   }
 
   bot.pathfinder.getPathFromTo = function * (movements, startPos, goal, options = {}) {
+    withFailedCosts(movements)
     const optimizePath = options.optimizePath ?? true
     const resetEntityIntersects = options.resetEntityIntersects ?? true
     const timeout = options.timeout ?? bot.pathfinder.thinkTimeout
@@ -271,7 +299,12 @@ function inject (bot) {
       const n2 = path[minI + 1]
       const d2 = bot.entity.position.distanceSquared(n2)
       const d12 = n1.distanceSquared(n2)
-      minI += d12 > d2 || reached ? 1 : 0
+      // A dig or a placement is done from n1 itself: n1 is cut off only once the body stands on
+      // it. (Cut off while the body was still on its way up to it, in the air or held at a wall
+      // beside it, its placement under a jump began a block too low and could never be made: the
+      // body jumped in place.)
+      if (n2.toBreak.length !== 0 || n2.toPlace.length !== 0) minI += reached && bot.entity.onGround ? 1 : 0
+      else minI += d12 > d2 || reached ? 1 : 0
     }
 
     const before = minI > 0 ? path[minI - 1] : null
@@ -296,8 +329,8 @@ function inject (bot) {
     }
     const first = path[0]
     if (first.toBreak.length !== 0 || first.toPlace.length !== 0) {
-      // a dig or a placement is done from the point before it
-      return Math.abs(from.x - at.x) <= 0.8 && Math.abs(from.z - at.z) <= 0.8 && Math.abs(from.y - at.y) <= 1.5
+      // a dig or a placement is done from the point before it: the body stands in its block
+      return Math.floor(from.x) === Math.floor(at.x) && Math.floor(from.z) === Math.floor(at.z) && Math.abs(from.y - at.y) < 1
     }
     // a walk, a jump or a drop: the body is on the way from the point before it to the first point
     const wx = first.x - from.x
@@ -583,7 +616,9 @@ function inject (bot) {
       if (revision !== pathRevision) return
       astartTimedout = results.status === 'partial'
       if (results.status === 'timeout') pathUpdated = false
-      if (found) {
+      if (found || placing) {
+        // (while a placement is under way the path is not replaced: the placement would go on
+        // from a block of the old path)
         found = results
       } else if (beginsAtBody(results.path, before)) {
         path = results.path
@@ -696,6 +731,7 @@ function inject (bot) {
       // point is: the path is dropped and searched again from where the body stands. (This
       // branch returns before the check at the end of the function.)
       if (performance.now() - lastNodeTime > 3500) {
+        if (placingBlock) noteFailed(placingBlock.x + placingBlock.dx, placingBlock.y + placingBlock.dy, placingBlock.z + placingBlock.dz)
         resetPath('stuck')
         return
       }
@@ -722,6 +758,18 @@ function inject (bot) {
       }
       let canPlace = true
       if (placingBlock.jump) {
+        // A block under a jump goes into the column the body stands in, and the jump must lift the
+        // feet above it (about 1.25 blocks). From another column, or from too low, it can never be
+        // placed: the step fails at once instead of jumping until the step times out.
+        const at = bot.entity.position
+        const tx = placingBlock.x + placingBlock.dx
+        const tz = placingBlock.z + placingBlock.dz
+        if (!lockPlaceBlock._locked && (Math.floor(at.x) !== tx || Math.floor(at.z) !== tz ||
+            (bot.entity.onGround && at.y + 1.25 <= placingBlock.y + 2.1))) {
+          noteFailed(tx, placingBlock.y + placingBlock.dy, tz)
+          resetPath('place_error')
+          return
+        }
         bot.setControlState('jump', true)
         // The block goes under the body once the feet are above where its top will be
         // (PrismarineJS/mineflayer-pathfinder#296): placed earlier, it is inside the body and
@@ -837,6 +885,7 @@ function inject (bot) {
     // check for futility
     if (performance.now() - lastNodeTime > 3500) {
       // should never take this long to go to the next node
+      noteFailed(nextPoint.x, nextPoint.y, nextPoint.z)
       resetPath('stuck')
     }
   }
