@@ -56,5 +56,16 @@ In `lib/movements.js`:
   block into the snow's cell (where the body was) and refused, every time, and the path came
   back to that step again and again.
 
+- A dig or a placement starts only where the body stands: the point before it is cut off only
+  once the body stands on it, and a path whose first step is one begins at the body only when the
+  body is in that point's block. Cut off by distance while the body was still going up to it (in
+  the air, or held at a wall beside it), a placement under a jump began a block too low, in the
+  next column, and jump stayed pressed until the step timed out. A jump placement that cannot be
+  made from where the body is fails at once (`place_error`); a search's result does not replace
+  the path while a placement is under way.
+- A failed step costs more: a step that ended `stuck` or `place_error` costs 20 more per failure
+  for 60 s in the searches that follow. Searched again from the same place with the same inputs,
+  the same path came out each time and the body repeated the step it had just failed.
+
 `package.json`: vec3 `>=0.1.10 <0.3.0`, so the pathfinder uses the Vec3 class of the bot it
 is loaded into.
